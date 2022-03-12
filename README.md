@@ -3,7 +3,7 @@
 </h1>
 
 <p align='center'>
-    I Love Code & Learn.
+    I Love to Code & Learn.
 </p>
 
 <p align='center'>
