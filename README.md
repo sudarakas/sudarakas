@@ -7,8 +7,8 @@
 </p>
 
 <p align='center'>
-<!--     <a href="#"><img src="https://github-readme-stats.vercel.app/api?username=sudarakas&show_icons=true&count_private=true&theme=github_dark" height="150"></a>
-    <a href="#"><img src="https://github-readme-stats.vercel.app/api/top-langs/?username=sudarakas&layout=compact&theme=github_dark" height="150"/></a> -->
+<a href="#"><img src="https://github-readme-stats.vercel.app/api?username=sudarakas&show_icons=true&count_private=true&theme=github_dark" height="150"></a>
+<a href="#"><img src="https://github-readme-stats.vercel.app/api/top-langs/?username=sudarakas&layout=compact&theme=github_dark" height="150"/></a>
 </p>
 
 <p align='center'>
