@@ -1,0 +1,73 @@
+name: Update GitHub Stats
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Run daily at 00:00 AM UTC
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  update-stats:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Restore cache
+        uses: actions/cache@v4
+        with:
+          path: cache/
+          key: github-stats-${{ runner.os }}-${{ hashFiles('cache/*.json') }}
+          restore-keys: |
+            github-stats-${{ runner.os }}-
+      
+      - name: Generate GitHub stats
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          USER_NAME: ${{ secrets.USER_NAME }}
+        run: |
+          python github_stats.py
+      
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          git add -A
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-update GitHub stats [$(date +'%Y-%m-%d %H:%M:%S')]"
+            git push
+            echo "Changes committed and pushed successfully"
+          fi
+      
+      - name: Upload cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: cache/
+          key: github-stats-${{ runner.os }}-${{ github.run_id }}
