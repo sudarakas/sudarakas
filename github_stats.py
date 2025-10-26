@@ -39,104 +39,146 @@ class Config:
 
 
 class GitHubAPIClient:
-    """Execute GraphQL query with error handling"""
+    """Handles all GitHub API interactions"""
     
-    def __init__(self, config):
+    def __init__(self, config: Config):
         self.config = config
         self.headers = {'authorization': f'token {config.access_token}'}
         self.base_url = 'https://api.github.com/graphql'
         self.query_count = {}
         self.owner_id = None
         
-        # Retry configuration
-        self.max_retries = 5
-        self.base_delay = 2  # seconds
-        self.max_delay = 60  # seconds
-        
     def _query(self, query_name: str, query: str, variables: Dict) -> Dict:
         """Execute GraphQL query with error handling"""
         self._increment_count(query_name)
         
-        for attempt in range(self.max_retries):
-            try:
-                response = requests.post(
-                    self.base_url,
-                    json={'query': query, 'variables': variables},
-                    headers=self.headers,
-                    timeout=30
-                )
-                
-                # Handle rate limiting (403) and server errors (5xx)
-                if response.status_code == 403:
-                    # Check if rate limited
-                    rate_limit_remaining = response.headers.get('X-RateLimit-Remaining', '0')
-                    if rate_limit_remaining == '0':
-                        reset_time = int(response.headers.get('X-RateLimit-Reset', 0))
-                        wait_time = max(reset_time - time.time(), 0) + 5
-                        print(f'Rate limited. Waiting {wait_time:.0f}s...')
-                        time.sleep(wait_time)
-                        continue
-                
-                # Retry on server errors (502, 503, 504, etc.)
-                if response.status_code >= 500:
-                    if attempt < self.max_retries - 1:
-                        delay = min(self.base_delay * (2 ** attempt), self.max_delay)
-                        print(f'Server error {response.status_code} on {query_name}. '
-                              f'Retrying in {delay:.1f}s... (attempt {attempt + 1}/{self.max_retries})')
-                        time.sleep(delay)
-                        continue
-                
-                # Raise for other HTTP errors
-                response.raise_for_status()
-                
-                # Parse response
-                data = response.json()
-                if 'errors' in data:
-                    # Check if it's a timeout error that we can retry
-                    error_msg = str(data['errors'])
-                    if 'timeout' in error_msg.lower() and attempt < self.max_retries - 1:
-                        delay = min(self.base_delay * (2 ** attempt), self.max_delay)
-                        print(f'GraphQL timeout on {query_name}. Retrying in {delay:.1f}s...')
-                        time.sleep(delay)
-                        continue
-                    raise Exception(f"GraphQL errors: {data['errors']}")
-                
-                return data
-                
-            except requests.exceptions.Timeout:
-                if attempt < self.max_retries - 1:
-                    delay = min(self.base_delay * (2 ** attempt), self.max_delay)
-                    print(f'Request timeout on {query_name}. Retrying in {delay:.1f}s...')
-                    time.sleep(delay)
-                    continue
-                raise Exception(f"{query_name} timed out after {self.max_retries} attempts")
-                
-            except requests.exceptions.ConnectionError:
-                if attempt < self.max_retries - 1:
-                    delay = min(self.base_delay * (2 ** attempt), self.max_delay)
-                    print(f'Connection error on {query_name}. Retrying in {delay:.1f}s...')
-                    time.sleep(delay)
-                    continue
-                raise Exception(f"{query_name} connection failed after {self.max_retries} attempts")
-                
-            except requests.exceptions.RequestException as e:
-                # Don't retry client errors (4xx except 403)
-                if hasattr(e, 'response') and e.response is not None:
-                    if 400 <= e.response.status_code < 500 and e.response.status_code != 403:
-                        raise Exception(f"{query_name} failed: {str(e)}")
-                
-                if attempt < self.max_retries - 1:
-                    delay = min(self.base_delay * (2 ** attempt), self.max_delay)
-                    print(f'Request failed on {query_name}. Retrying in {delay:.1f}s...')
-                    time.sleep(delay)
-                    continue
-                raise Exception(f"{query_name} failed after {self.max_retries} attempts: {str(e)}")
-        
-        raise Exception(f"{query_name} failed after {self.max_retries} attempts")
+        try:
+            response = requests.post(
+                self.base_url,
+                json={'query': query, 'variables': variables},
+                headers=self.headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            if 'errors' in data:
+                raise Exception(f"GraphQL errors: {data['errors']}")
+            
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"{query_name} failed: {str(e)}")
     
     def _increment_count(self, query_name: str):
         """Track API call counts"""
         self.query_count[query_name] = self.query_count.get(query_name, 0) + 1
+    
+    def get_user_data(self) -> Tuple[Dict, str]:
+        """Fetch user ID and account creation date"""
+        query = '''
+        query($login: String!) {
+            user(login: $login) {
+                id
+                createdAt
+                followers { totalCount }
+                repositories(ownerAffiliations: OWNER) { totalCount }
+            }
+        }'''
+        
+        data = self._query('user_data', query, {'login': self.config.user_name})
+        user = data['data']['user']
+        self.owner_id = {'id': user['id']}
+        
+        return self.owner_id, user['createdAt']
+    
+    def get_commit_count(self, start_date: str, end_date: str) -> int:
+        """Get total commit count in date range"""
+        query = '''
+        query($start_date: DateTime!, $end_date: DateTime!, $login: String!) {
+            user(login: $login) {
+                contributionsCollection(from: $start_date, to: $end_date) {
+                    contributionCalendar { totalContributions }
+                }
+            }
+        }'''
+        
+        variables = {
+            'start_date': start_date,
+            'end_date': end_date,
+            'login': self.config.user_name
+        }
+        
+        data = self._query('commit_count', query, variables)
+        return data['data']['user']['contributionsCollection']['contributionCalendar']['totalContributions']
+    
+    def get_repositories(self, owner_affiliation: List[str], cursor: Optional[str] = None) -> Dict:
+        """Fetch repositories with pagination"""
+        query = '''
+        query($owner_affiliation: [RepositoryAffiliation], $login: String!, $cursor: String) {
+            user(login: $login) {
+                repositories(first: 100, after: $cursor, ownerAffiliations: $owner_affiliation) {
+                    totalCount
+                    edges {
+                        node {
+                            nameWithOwner
+                            stargazers { totalCount }
+                            defaultBranchRef {
+                                target {
+                                    ... on Commit {
+                                        history { totalCount }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    pageInfo {
+                        endCursor
+                        hasNextPage
+                    }
+                }
+            }
+        }'''
+        
+        variables = {
+            'owner_affiliation': owner_affiliation,
+            'login': self.config.user_name,
+            'cursor': cursor
+        }
+        
+        return self._query('repositories', query, variables)
+    
+    def get_repo_commits(self, owner: str, repo_name: str, cursor: Optional[str] = None) -> Dict:
+        """Fetch commit history for a repository"""
+        query = '''
+        query($repo_name: String!, $owner: String!, $cursor: String) {
+            repository(name: $repo_name, owner: $owner) {
+                defaultBranchRef {
+                    target {
+                        ... on Commit {
+                            history(first: 100, after: $cursor) {
+                                totalCount
+                                edges {
+                                    node {
+                                        committedDate
+                                        author { user { id } }
+                                        deletions
+                                        additions
+                                    }
+                                }
+                                pageInfo {
+                                    endCursor
+                                    hasNextPage
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }'''
+        
+        variables = {'repo_name': repo_name, 'owner': owner, 'cursor': cursor}
+        return self._query('repo_commits', query, variables)
 
 
 class StatsCalculator:
